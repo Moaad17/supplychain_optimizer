@@ -1,0 +1,7 @@
+holding_cost: 5 #(coût de stockage par unité excédentaire par mois)
+shortage_cost: 20 #(coût de rupture par unité manquante)
+unit_cost: 10 #(coût d'achat par unité)
+max_budget: 500000 #(budget total maximum)
+max_capacity: 10000 #(capacité de stockage totale en unités)
+forecast_horizon: 3 #(nombre de mois à prédire)
+confidence_level: 0.95 #(niveau de confiance pour les intervalles)
