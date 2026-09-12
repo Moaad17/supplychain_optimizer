@@ -16,7 +16,7 @@ FEATURE_COLUMNS = [
 ]
 
 
-def create_temporal_features(df, product_name):
+def create_temporal_features(df: pd.DataFrame, product_name: str) -> pd.DataFrame:
     """
     Crée les features temporelles pour un produit donné.
 
@@ -62,7 +62,9 @@ def create_temporal_features(df, product_name):
     return product_df
 
 
-def _train_test_split_temporal(features_df, horizon):
+def _train_test_split_temporal(
+    features_df: pd.DataFrame, horizon: int
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     """
     Split chronologique STRICT : les `horizon` dernières lignes vont au
     test, tout le reste va au train. Jamais de split aléatoire : un split
@@ -85,7 +87,7 @@ def _train_test_split_temporal(features_df, horizon):
     return train, test
 
 
-def _backtest(features_df, horizon):
+def _backtest(features_df: pd.DataFrame, horizon: int) -> float | None:
     """
     Entraîne XGBoost sur tout sauf les `horizon` derniers mois connus,
     prédit ces mois cachés, et calcule le MAE.
@@ -109,7 +111,9 @@ def _backtest(features_df, horizon):
     return mean_absolute_error(test["quantity"].values, predictions)
 
 
-def _next_feature_row(history, next_date, trend):
+def _next_feature_row(
+    history: pd.DataFrame, next_date: pd.Timestamp, trend: int
+) -> pd.DataFrame:
     """
     Construit la ligne de features pour le mois `next_date`, à partir de
     l'historique connu (auquel s'ajoutent les prédictions déjà générées
@@ -141,7 +145,9 @@ def _next_feature_row(history, next_date, trend):
     }])
 
 
-def _forecast_future(features_df, horizon, quantile_alpha=None):
+def _forecast_future(
+    features_df: pd.DataFrame, horizon: int, quantile_alpha: float | None = None
+) -> tuple[list[pd.Timestamp], list[float]]:
     """
     Entraîne un modèle sur tout l'historique disponible puis prédit
     récursivement les `horizon` prochains mois : chaque prédiction sert
@@ -195,7 +201,7 @@ def _forecast_future(features_df, horizon, quantile_alpha=None):
     return dates, predictions
 
 
-def forecast_xgboost(df, product_name, horizon=3):
+def forecast_xgboost(df: pd.DataFrame, product_name: str, horizon: int = 3) -> dict:
     """
     Prédit les `horizon` prochains mois pour un produit avec XGBoost
     et des features temporelles manuelles (lags, moyennes glissantes,

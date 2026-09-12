@@ -7,7 +7,7 @@ from sklearn.metrics import mean_absolute_error
 MIN_MONTHS_RECOMMENDED = 24
 
 
-def prepare_for_prophet(df, product_name):
+def prepare_for_prophet(df: pd.DataFrame, product_name: str) -> pd.DataFrame:
     """
     Filtre le DataFrame pour un produit donné et le convertit
     au format attendu par Prophet : colonnes 'ds' (date) et 'y' (valeur).
@@ -29,7 +29,7 @@ def prepare_for_prophet(df, product_name):
     )
 
 
-def _backtest(prophet_df, horizon):
+def _backtest(prophet_df: pd.DataFrame, horizon: int) -> float | None:
     """
     Cache les `horizon` derniers mois, entraîne Prophet sur le reste,
     puis compare les prédictions aux valeurs réelles cachées.
@@ -58,7 +58,7 @@ def _backtest(prophet_df, horizon):
     return mean_absolute_error(test["y"].values, predictions_test)
 
 
-def forecast_prophet(df, product_name, horizon=3):
+def forecast_prophet(df: pd.DataFrame, product_name: str, horizon: int = 3) -> dict:
     """
     Prédit les `horizon` prochains mois pour un produit avec Prophet.
 

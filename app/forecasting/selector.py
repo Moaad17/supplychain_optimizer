@@ -1,5 +1,7 @@
 import logging
 
+import pandas as pd
+
 from forecasting.prophet_model import forecast_prophet
 from forecasting.ml_model import forecast_xgboost
 
@@ -12,7 +14,9 @@ MODEL_FUNCTIONS = {
 }
 
 
-def forecast_all_products(df, model_type="prophet", horizon=3):
+def forecast_all_products(
+    df: pd.DataFrame, model_type: str = "prophet", horizon: int = 3
+) -> dict:
     """
     Applique UN modèle (Prophet ou XGBoost) à tous les produits du
     DataFrame.
@@ -65,7 +69,7 @@ def forecast_all_products(df, model_type="prophet", horizon=3):
     return {"results": results, "failed": failed}
 
 
-def select_best_model(df, product_name, horizon=3):
+def select_best_model(df: pd.DataFrame, product_name: str, horizon: int = 3) -> dict:
     """
     Entraîne Prophet ET XGBoost pour un produit, compare leur MAE de
     backtest, et retourne le résultat du modèle gagnant.
@@ -110,7 +114,7 @@ def select_best_model(df, product_name, horizon=3):
     }
 
 
-def forecast_all_products_auto(df, horizon=3):
+def forecast_all_products_auto(df: pd.DataFrame, horizon: int = 3) -> dict:
     """
     Boucle sur chaque produit, sélectionne automatiquement le meilleur
     modèle (Prophet vs XGBoost) via select_best_model, et retourne un

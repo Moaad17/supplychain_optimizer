@@ -20,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 from data.loader import load_data
 from data.validator import validate_data
 from data.preprocessor import preprocess_data
+from forecasting.prophet_model import forecast_prophet
+from forecasting.ml_model import forecast_xgboost
 from forecasting.selector import forecast_all_products_auto
 
 
@@ -137,6 +139,73 @@ def test_forecast_all_products_auto_partial_failure():
 
     assert short_product in forecast_result["failed"]
     assert len(forecast_result["results"]) == df_partial["product"].nunique() - 1
+
+
+# ==========================================================
+# Invariants Prophet / XGBoost (indépendants du sélecteur)
+# ==========================================================
+
+@pytest.fixture(scope="module")
+def beverages_df():
+    """DataFrame prétraité, réutilisé par les tests d'invariants
+    ci-dessous pour éviter de recharger le CSV à chaque test."""
+
+    df = load_data(EXAMPLES_DIR / "sample_beverages.csv")
+    return preprocess_data(df)
+
+
+@pytest.mark.parametrize("forecast_function", [forecast_prophet, forecast_xgboost])
+def test_predictions_are_non_negative(beverages_df, forecast_function):
+    """Les ventes ne peuvent pas être négatives : predictions >= 0."""
+
+    product = beverages_df["product"].unique()[0]
+    result = forecast_function(beverages_df, product, horizon=HORIZON)
+
+    assert all(prediction >= 0 for prediction in result["predictions"])
+
+
+@pytest.mark.parametrize("forecast_function", [forecast_prophet, forecast_xgboost])
+def test_confidence_interval_is_coherent(beverages_df, forecast_function):
+    """
+    Pour chaque mois prédit : lower <= prediction <= upper, et
+    lower >= 0. Un intervalle inversé ou négatif indiquerait un bug.
+    """
+
+    product = beverages_df["product"].unique()[0]
+    result = forecast_function(beverages_df, product, horizon=HORIZON)
+
+    for lower, prediction, upper in zip(
+        result["lower"], result["predictions"], result["upper"]
+    ):
+        assert lower <= prediction <= upper
+        assert lower >= 0
+
+
+def test_selector_returns_result_for_every_product(beverages_df):
+    """forecast_all_products_auto doit retourner un résultat pour
+    chaque produit du dataset (aucun perdu, aucun dupliqué)."""
+
+    forecast_result = forecast_all_products_auto(beverages_df, horizon=HORIZON)
+
+    assert len(forecast_result["results"]) == beverages_df["product"].nunique()
+
+
+@pytest.mark.parametrize("forecast_function", [forecast_prophet, forecast_xgboost])
+def test_mae_beats_naive_mean_baseline(beverages_df, forecast_function):
+    """
+    Un modèle utile doit faire mieux qu'une prédiction naïve = la
+    moyenne des ventes. Si la MAE dépasse 50% de la moyenne, le modèle
+    est pire qu'une moyenne constante -> quelque chose ne va pas.
+    """
+
+    for product in beverages_df["product"].unique():
+        result = forecast_function(beverages_df, product, horizon=HORIZON)
+        mean_quantity = beverages_df.loc[
+            beverages_df["product"] == product, "quantity"
+        ].mean()
+
+        assert result["mae"] is not None
+        assert result["mae"] < 0.5 * mean_quantity
 
 
 # ==========================================================

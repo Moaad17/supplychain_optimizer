@@ -1,7 +1,14 @@
+import pandas as pd
 import plotly.graph_objects as go
 
 
-def compare_forecasts(df, product_name, prophet_result, xgboost_result, save_path=None):
+def compare_forecasts(
+    df: pd.DataFrame,
+    product_name: str,
+    prophet_result: dict,
+    xgboost_result: dict,
+    save_path: str | None = None
+) -> go.Figure:
     """
     Affiche sur un même graphique l'historique et les prédictions de
     Prophet et XGBoost pour un produit donné, afin de les comparer
@@ -80,7 +87,7 @@ def compare_forecasts(df, product_name, prophet_result, xgboost_result, save_pat
     return fig
 
 
-def compare_mae(prophet_result, xgboost_result):
+def compare_mae(prophet_result: dict, xgboost_result: dict) -> dict:
     """
     Compare les deux modèles sur la base de leur MAE de backtest.
 

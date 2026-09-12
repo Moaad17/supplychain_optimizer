@@ -1,7 +1,13 @@
+import pandas as pd
 import plotly.graph_objects as go
 
 
-def plot_forecast(df, product_name, forecast_result, save_path=None):
+def plot_forecast(
+    df: pd.DataFrame,
+    product_name: str,
+    forecast_result: dict,
+    save_path: str | None = None
+) -> go.Figure:
     """
     Trace l'historique, les prédictions et l'intervalle de confiance
     pour un produit donné.
