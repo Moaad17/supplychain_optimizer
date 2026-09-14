@@ -1,10 +1,13 @@
+from config import config
 from data.loader import load_data
 from data.validator import validate_data
 from data.preprocessor import preprocess_data
 from forecasting.prophet_model import forecast_prophet
 from forecasting.ml_model import forecast_xgboost
+from forecasting.selector import forecast_all_products_auto
 from analysis.visualizer import plot_forecast
 from analysis.comparator import compare_forecasts, compare_mae
+from optimization.solver import evaluate_strategies
 
 
 filepath = "examples/sample_beverages.csv"
@@ -76,3 +79,51 @@ else:
     print(compare_mae(result, result_xgb))
 
     compare_forecasts(df_processed, product_name, result, result_xgb)
+
+    # 8. Forecast + sélection automatique du modèle sur TOUS les produits
+    forecast_auto = forecast_all_products_auto(df_processed, horizon=3)
+
+    print("\n=== FORECAST AUTO (TOUS PRODUITS) ===")
+    for product, forecast in forecast_auto["results"].items():
+        mae = forecast["mae"]
+        mae_str = f"{mae:.1f}" if mae is not None else "N/A"
+        print(f"  {product} → {forecast['model']} (MAE={mae_str})")
+
+    for product, reason in forecast_auto["failed"].items():
+        print(f"  {product} → ÉCHEC ({reason})")
+
+    # 9. Optimisation des stocks sous incertitude (Phase 3)
+    #    HN (stochastique) vs WS (information parfaite) vs EV (déterministe)
+    strategies = evaluate_strategies(
+        forecast_auto["results"],
+        unit_cost=config["unit_cost"],
+        holding_cost=config["holding_cost"],
+        shortage_cost=config["shortage_cost"],
+        max_budget=config["max_budget"],
+        max_capacity=config["max_capacity"],
+        confidence_level=config["confidence_level"]
+    )
+
+    hn = strategies["hn"]
+
+    print(f"\n=== OPTIMISATION DES STOCKS ({hn['status']}) ===")
+
+    if hn["status"] == "Optimal":
+        for product, order in hn["orders"].items():
+            print(
+                f"  {product} → commander {order:.0f} unités "
+                f"(niveau de service ≈ {hn['service_level'][product]:.0%}, "
+                f"rupture attendue ≈ {hn['expected_shortage'][product]:.1f}, "
+                f"surstock attendu ≈ {hn['expected_surplus'][product]:.1f})"
+            )
+
+        print("\n--- Comparaison des stratégies ---")
+        print(f"WS (information parfaite) : {strategies['ws_cost']:.2f}")
+        print(f"HN (stochastique)         : {hn['total_cost']:.2f}")
+        print(f"EV (déterministe)         : {strategies['ev_cost']:.2f}")
+        print(f"EVPI (coût de l'incertitude)             : {strategies['evpi']:.2f}")
+        print(f"VSS (valeur de l'optim. stochastique)    : {strategies['vss']:.2f}")
+        if not strategies["checks_ok"]:
+            print("⚠️ WS <= HN <= EV n'est pas respecté — vérifier le modèle.")
+    else:
+        print("Pas de solution optimale trouvée — vérifier le budget/la capacité.")
