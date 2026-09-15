@@ -12,10 +12,22 @@ from scipy.stats import norm
 from optimization.constraints import generate_demand_scenarios
 from optimization.solver import (
     solve_recourse_problem,
-    optimize_inventory,
+    solve_optimal,
     evaluate_strategies
 )
 from optimization.lshaped import solve_lshaped
+
+
+def _optimize(forecast_results, n_sampled=20, extreme_prob=0.15, normal_prob=0.50,
+              seed=42, integer=True, **kwargs):
+    """Raccourci de test : génère les scénarios (méthode C) puis résout
+    avec solve_optimal (équivalent de l'ancien optimize_inventory)."""
+
+    scenarios, probabilities = generate_demand_scenarios(
+        forecast_results, n_sampled=n_sampled, extreme_prob=extreme_prob,
+        normal_prob=normal_prob, seed=seed
+    )
+    return solve_optimal(scenarios, probabilities, integer=integer, **kwargs)
 
 
 UNIT_COST = 10
@@ -85,7 +97,7 @@ def test_generate_demand_scenarios_non_negative():
 def test_optimize_inventory_respects_budget_and_capacity():
     forecast_results = {"Produit": _fake_forecast_result(mean=1000, std_95=100)}
 
-    result = optimize_inventory(
+    result = _optimize(
         forecast_results,
         unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
         max_budget=2000, max_capacity=10**9, n_sampled=50
@@ -101,7 +113,7 @@ def test_optimize_inventory_orders_are_integers_by_default():
         "B": _fake_forecast_result(mean=283, std_95=30),
     }
 
-    result = optimize_inventory(
+    result = _optimize(
         forecast_results,
         unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
         max_budget=10**9, max_capacity=10**9, n_sampled=30
@@ -114,7 +126,7 @@ def test_optimize_inventory_orders_are_integers_by_default():
 def test_optimize_inventory_infeasible_reports_status_without_crashing():
     forecast_results = {"Produit": _fake_forecast_result(mean=100, std_95=10)}
 
-    result = optimize_inventory(
+    result = _optimize(
         forecast_results,
         unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
         max_budget=-1, max_capacity=10**9, n_sampled=10
@@ -141,7 +153,7 @@ def test_optimize_inventory_matches_newsvendor_with_fine_grained_scenarios():
 
     forecast_results = {"Produit": _fake_forecast_result(mean=mean, std_95=std)}
 
-    result = optimize_inventory(
+    result = _optimize(
         forecast_results,
         unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
         max_budget=10**9, max_capacity=10**9,
@@ -169,7 +181,7 @@ def test_default_method_c_snaps_to_an_anchor_point():
 
     forecast_results = {"Produit": _fake_forecast_result(mean=1000, std_95=150)}
 
-    result = optimize_inventory(
+    result = _optimize(
         forecast_results,
         unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
         max_budget=10**9, max_capacity=10**9,
@@ -224,6 +236,133 @@ def test_evaluate_strategies_with_binding_capacity():
 # ==========================================================
 # solve_lshaped (décomposition de Benders)
 # ==========================================================
+
+def test_solve_optimal_dispatches_to_pde_direct_below_threshold():
+    forecast_results = {"A": _fake_forecast_result(mean=1000, std_95=150)}
+    scenarios, probabilities = generate_demand_scenarios(forecast_results, n_sampled=20, seed=1)
+
+    result = solve_optimal(
+        scenarios, probabilities,
+        unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
+        max_budget=10**9, max_capacity=10**9, lshaped_threshold=100
+    )
+
+    assert result["method"] == "PDE direct"
+    assert result["status"] == "Optimal"
+
+
+def test_solve_optimal_dispatches_to_lshaped_above_threshold():
+    """Force le seuil très bas (1) pour vérifier le branchement
+    L-shaped sans avoir besoin de 100 produits réels dans le test."""
+
+    forecast_results = {
+        "A": _fake_forecast_result(mean=1000, std_95=150),
+        "B": _fake_forecast_result(mean=500, std_95=100),
+    }
+    scenarios, probabilities = generate_demand_scenarios(forecast_results, n_sampled=20, seed=1)
+
+    direct = solve_recourse_problem(
+        scenarios, probabilities,
+        unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
+        max_budget=10**9, max_capacity=10**9
+    )
+    dispatched = solve_optimal(
+        scenarios, probabilities,
+        unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
+        max_budget=10**9, max_capacity=10**9, lshaped_threshold=1
+    )
+
+    assert dispatched["method"] == "L-shaped"
+    assert dispatched["status"] in ("Optimal", "MaxIterations")
+    # Complété par evaluate_fixed_order -- doit avoir les mêmes clés que le PDE direct
+    assert set(dispatched) >= {"expected_shortage", "expected_surplus", "service_level"}
+    assert dispatched["total_cost"] == pytest.approx(direct["total_cost"], rel=0.02)
+
+
+# ==========================================================
+# Stratégie Naïve (moyenne historique) + tableau de comparaison
+# ==========================================================
+
+def test_evaluate_strategies_with_naive_baseline():
+    forecast_results = {
+        "A": _fake_forecast_result(mean=1000, std_95=150),
+        "B": _fake_forecast_result(mean=500, std_95=100),
+    }
+    # Une commande naïve délibérément mauvaise (bien en dessous de la
+    # moyenne) pour vérifier qu'elle ressort bien comme la plus chère.
+    historical_orders = {"A": 400, "B": 200}
+
+    result = evaluate_strategies(
+        forecast_results,
+        unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
+        max_budget=10**9, max_capacity=10**9,
+        historical_orders=historical_orders, n_sampled=30, seed=1
+    )
+
+    assert result["naive_cost"] is not None
+    assert result["naive_orders"] == historical_orders
+    assert result["naive_cost"] >= result["hn"]["total_cost"]
+
+    strategies_present = {row["strategy"] for row in result["comparison"]}
+    assert strategies_present == {"WS", "HN", "EV", "Naïf"}
+
+    # Trié par coût croissant
+    costs = [row["cost"] for row in result["comparison"]]
+    assert costs == sorted(costs)
+
+    # HN est la référence (vs_hn_abs=0, vs_hn_pct=0)
+    hn_row = next(row for row in result["comparison"] if row["strategy"] == "HN")
+    assert hn_row["vs_hn_abs"] == pytest.approx(0.0, abs=1e-6)
+    assert hn_row["vs_hn_pct"] == pytest.approx(0.0, abs=1e-6)
+
+    naive_row = next(row for row in result["comparison"] if row["strategy"] == "Naïf")
+    assert naive_row["vs_hn_abs"] == pytest.approx(
+        result["naive_cost"] - result["hn"]["total_cost"]
+    )
+
+
+def test_naive_orders_exceeding_capacity_are_scaled_down():
+    """
+    Non-régression : la commande naïve (moyenne historique) ne connaît
+    pas le budget/la capacité et peut les dépasser. Sans réduction, son
+    coût "évalué" ignore la contrainte de capacité et ressort
+    artificiellement moins cher que HN (qui la respecte) -- un plan
+    physiquement impossible ne doit jamais sembler "moins cher".
+    """
+
+    forecast_results = {
+        "A": _fake_forecast_result(mean=1000, std_95=100),
+        "B": _fake_forecast_result(mean=1000, std_95=100),
+    }
+    # Somme = 2000, largement au-dessus de la capacité choisie (800)
+    historical_orders = {"A": 1000, "B": 1000}
+
+    result = evaluate_strategies(
+        forecast_results,
+        unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
+        max_budget=10**9, max_capacity=800,
+        historical_orders=historical_orders, n_sampled=30, seed=1
+    )
+
+    assert result["naive_scale_applied"] == pytest.approx(800 / 2000)
+    assert sum(result["naive_orders"].values()) == pytest.approx(800)
+    # La commande naïve réduite doit rester cohérente avec les
+    # proportions d'origine (1:1 ici)
+    assert result["naive_orders"]["A"] == pytest.approx(result["naive_orders"]["B"])
+
+
+def test_evaluate_strategies_without_naive_baseline_omits_it():
+    forecast_results = {"A": _fake_forecast_result(mean=1000, std_95=150)}
+
+    result = evaluate_strategies(
+        forecast_results,
+        unit_cost=UNIT_COST, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
+        max_budget=10**9, max_capacity=10**9, n_sampled=20, seed=1
+    )
+
+    assert result["naive_cost"] is None
+    assert {row["strategy"] for row in result["comparison"]} == {"WS", "HN", "EV"}
+
 
 @pytest.mark.parametrize("max_capacity", [10**9, 1500])
 def test_lshaped_matches_direct_pde(max_capacity):

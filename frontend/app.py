@@ -25,6 +25,7 @@ from data.validator import validate_data  # noqa: E402
 from data.preprocessor import preprocess_data  # noqa: E402
 from forecasting.selector import forecast_all_products_auto  # noqa: E402
 from optimization.solver import evaluate_strategies  # noqa: E402
+from optimization.baselines import compute_naive_orders  # noqa: E402
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
@@ -104,12 +105,14 @@ def _forecast(df: pd.DataFrame, horizon: int):
 def _optimize(
     forecast_results: dict,
     unit_cost: float, holding_cost: float, shortage_cost: float,
-    max_budget: float, max_capacity: float, confidence_level: float
+    max_budget: float, max_capacity: float, confidence_level: float,
+    historical_orders: dict
 ):
     return evaluate_strategies(
         forecast_results,
         unit_cost=unit_cost, holding_cost=holding_cost, shortage_cost=shortage_cost,
         max_budget=max_budget, max_capacity=max_capacity,
+        historical_orders=historical_orders,
         confidence_level=confidence_level
     )
 
@@ -169,15 +172,19 @@ if not forecast_auto["results"]:
 
 # ---- Optimisation ----
 
+naive_orders = compute_naive_orders(df_processed, horizon=horizon)
+
 strategies = _optimize(
     forecast_auto["results"],
     unit_cost=unit_cost, holding_cost=holding_cost, shortage_cost=shortage_cost,
-    max_budget=max_budget, max_capacity=max_capacity, confidence_level=confidence_level
+    max_budget=max_budget, max_capacity=max_capacity, confidence_level=confidence_level,
+    historical_orders=naive_orders
 )
 
 hn = strategies["hn"]
 
 st.subheader("📦 Solution optimale (commande à passer)")
+st.caption(f"Méthode de résolution : **{hn.get('method', '—')}**")
 
 if hn["status"] != "Optimal":
     st.error(f"Pas de solution optimale trouvée ({hn['status']}) — vérifie le budget/la capacité.")
@@ -207,28 +214,66 @@ st.markdown(
     "(achat certain + espérance des coûts de rupture/surstock sur tous les scénarios)."
 )
 
-# ---- WS / HN / EV / EVPI / VSS ----
+# ---- WS / HN / EV / Naïf / EVPI / VSS ----
 
 st.subheader("🔍 Comparaison des stratégies")
 
 ws_cost = strategies["ws_cost"]
 ev_cost = strategies["ev_cost"]
 hn_cost = hn["total_cost"]
+naive_cost = strategies["naive_cost"]
 evpi = strategies["evpi"]
 vss = strategies["vss"]
 
-col_ws, col_hn, col_ev = st.columns(3)
-col_ws.metric("WS — information parfaite", f"{ws_cost:,.2f}")
-col_hn.metric("HN — stochastique (recommandé)", f"{hn_cost:,.2f}")
-col_ev.metric("EV — déterministe (moyenne)", f"{ev_cost:,.2f}")
+if strategies.get("naive_scale_applied") is not None and strategies["naive_scale_applied"] < 1.0:
+    st.warning(
+        f"La commande naïve (moyenne historique) dépassait le budget et/ou la capacité "
+        f"-- réduite à {strategies['naive_scale_applied']:.0%} pour rester réalisable "
+        "avant d'être comparée (sinon elle paraîtrait, à tort, moins chère que HN)."
+    )
+
+STRATEGY_LABELS = {
+    "WS": "WS — information parfaite",
+    "HN": "HN — stochastique (recommandé)",
+    "EV": "EV — déterministe (moyenne)",
+    "Naïf": "Naïf — moyenne historique",
+}
+
+def _vs_hn_label(row):
+    if row["strategy"] == "HN":
+        return "référence"
+    direction = "plus cher" if row["vs_hn_pct"] >= 0 else "moins cher"
+    return f"{abs(row['vs_hn_pct']):.1f}% {direction}"
+
+
+comparison_table = pd.DataFrame([
+    {
+        "Stratégie": STRATEGY_LABELS.get(row["strategy"], row["strategy"]),
+        "Coût attendu (MAD)": round(row["cost"], 2),
+        "vs HN": _vs_hn_label(row),
+    }
+    for row in strategies["comparison"]
+])
+st.dataframe(comparison_table, width="stretch", hide_index=True)
+
+if naive_cost is not None:
+    savings_vs_naive = naive_cost - hn_cost
+    pct_vs_naive = savings_vs_naive / naive_cost * 100 if naive_cost else 0
+    st.markdown(
+        f"➡️ En utilisant **HN** plutôt que la stratégie **naïve** (moyenne historique), "
+        f"l'économie attendue est de **{savings_vs_naive:,.2f} MAD** "
+        f"(**{pct_vs_naive:.1f}%**) sur ce plan."
+    )
 
 st.caption(
     "**WS** (Wait and See) : coût si on connaissait la demande à l'avance -- une borne "
     "théorique inatteignable, elle sert juste de référence. "
     "**HN** (Here and Now) : coût de la stratégie recommandée par ce modèle, qui tient "
     "compte de l'incertitude. "
-    "**EV** (Expected Value) : coût si on avait commandé une quantité fixe basée sur la "
-    "demande moyenne (stratégie naïve), évalué sur les mêmes scénarios réels."
+    "**EV** (Expected Value) : commande figée basée sur la demande moyenne (via le même "
+    "modèle d'optimisation, sans ré-décision par scénario), évaluée sur les scénarios "
+    "réels. **Naïf** : commande figée = moyenne historique brute, sans prévision ni "
+    "optimisation -- le point de départ \"zéro effort\"."
 )
 
 col_evpi, col_vss = st.columns(2)
@@ -274,6 +319,8 @@ if not strategies["checks_ok"]:
         "signe possible d'un problème numérique, à vérifier."
     )
 
-st.bar_chart(
-    pd.DataFrame({"Coût attendu": [ws_cost, hn_cost, ev_cost]}, index=["WS", "HN", "EV"])
+chart_data = pd.DataFrame(
+    {"Coût attendu (MAD)": [row["cost"] for row in strategies["comparison"]]},
+    index=[row["strategy"] for row in strategies["comparison"]]
 )
+st.bar_chart(chart_data)
