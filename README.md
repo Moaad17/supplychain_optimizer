@@ -147,9 +147,3 @@ pytest -v
 cohérence des intervalles, gestion des échecs), et l'optimisation
 (contraintes respectées, cohérence WS ≤ HN ≤ EV, non-régression du
 solveur L-shaped contre le calcul direct).
-
-## Ce qui n'est pas encore fait
-
-- `app/API/` : pas encore d'API HTTP, seulement le script/l'interface Streamlit.
-- `app/analysis/metrics.py` : fichier réservé, pas encore implémenté.
-- Containerisation (`Dockerfile`, `docker-compose.yaml`) : pas encore écrite.
