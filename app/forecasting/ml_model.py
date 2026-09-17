@@ -8,7 +8,7 @@ from sklearn.metrics import mean_absolute_error
 # lag_12) sont peu fiables.
 MIN_MONTHS_RECOMMENDED = 24
 
-FEATURE_COLUMNS = [
+BASE_FEATURE_COLUMNS = [
     "month", "year", "quarter",
     "lag_1", "lag_3", "lag_12",
     "rolling_mean_3", "rolling_mean_12",
@@ -16,15 +16,32 @@ FEATURE_COLUMNS = [
 ]
 
 
+def _feature_columns_for(features_df: pd.DataFrame) -> list[str]:
+    """
+    Liste des colonnes de features à utiliser pour ce DataFrame :
+    les colonnes temporelles de base, + "unit_price" si elle est
+    présente (toutes les données n'ont pas forcément un prix unitaire).
+    """
+
+    columns = list(BASE_FEATURE_COLUMNS)
+    if "unit_price" in features_df.columns:
+        columns.append("unit_price")
+
+    return columns
+
+
 def create_temporal_features(df: pd.DataFrame, product_name: str) -> pd.DataFrame:
     """
-    Crée les features temporelles pour un produit donné.
+    Crée les features temporelles (+ prix, si disponible) pour un
+    produit donné.
 
     XGBoost ne comprend pas le temps : il faut lui fournir des colonnes
     numériques qui décrivent la saisonnalité et la tendance.
 
     Colonnes créées : month, year, quarter, lag_1, lag_3, lag_12,
-    rolling_mean_3, rolling_mean_12, trend.
+    rolling_mean_3, rolling_mean_12, trend, + unit_price (recopiée
+    telle quelle si la colonne existe dans `df` -- le prix peut
+    influencer la demande, cf. élasticité-prix).
 
     Attention : lag_12 a besoin de 12 mois d'historique avant la première
     ligne exploitable -> les premières lignes contiendront des NaN
@@ -58,6 +75,10 @@ def create_temporal_features(df: pd.DataFrame, product_name: str) -> pd.DataFram
 
     # Tendance linéaire : 1, 2, 3, ...
     product_df["trend"] = range(1, len(product_df) + 1)
+
+    # unit_price est déjà dans product_df si elle existait dans df
+    # (filtrage par produit ne perd aucune colonne) -- rien à faire de
+    # plus, elle est prête à être utilisée comme feature.
 
     return product_df
 
