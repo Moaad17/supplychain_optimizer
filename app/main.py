@@ -8,7 +8,7 @@ from forecasting.selector import forecast_all_products_auto
 from analysis.visualizer import plot_forecast
 from analysis.comparator import compare_forecasts, compare_mae
 from optimization.solver import evaluate_strategies
-from optimization.baselines import compute_naive_orders
+from optimization.baselines import compute_naive_orders, compute_unit_costs
 
 
 filepath = "examples/sample_beverages.csv"
@@ -98,9 +98,15 @@ else:
     #    parfaite) vs EV (déterministe) vs Naïf (moyenne historique)
     naive_orders = compute_naive_orders(df_processed, horizon=3)
 
+    unit_cost = (
+        compute_unit_costs(df_processed, default_unit_cost=config["unit_cost"])
+        if config.get("use_actual_unit_price", False)
+        else config["unit_cost"]
+    )
+
     strategies = evaluate_strategies(
         forecast_auto["results"],
-        unit_cost=config["unit_cost"],
+        unit_cost=unit_cost,
         holding_cost=config["holding_cost"],
         shortage_cost=config["shortage_cost"],
         max_budget=config["max_budget"],

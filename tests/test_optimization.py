@@ -6,6 +6,7 @@ L-shaped (lshaped.py).
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 from scipy.stats import norm
 
@@ -16,6 +17,7 @@ from optimization.solver import (
     evaluate_strategies
 )
 from optimization.lshaped import solve_lshaped
+from optimization.baselines import compute_unit_costs
 
 
 def _optimize(forecast_results, n_sampled=20, extreme_prob=0.15, normal_prob=0.50,
@@ -392,3 +394,52 @@ def test_lshaped_matches_direct_pde(max_capacity):
     assert lshaped["status"] == "Optimal"
     assert sum(lshaped["orders"].values()) <= max_capacity + 1e-6
     assert lshaped["total_cost"] == pytest.approx(direct["total_cost"], rel=0.02)
+
+
+# ==========================================================
+# baselines.compute_unit_costs (prix réel par produit)
+# ==========================================================
+
+def _make_df_with_price():
+    return pd.DataFrame({
+        "product": ["A", "A", "B", "B"],
+        "quantity": [10, 12, 5, 6],
+        "unit_price": [9.5, 9.5, 25.0, 25.0],
+    })
+
+
+def test_compute_unit_costs_uses_real_price_per_product():
+    costs = compute_unit_costs(_make_df_with_price(), default_unit_cost=1.0)
+
+    assert costs == {"A": pytest.approx(9.5), "B": pytest.approx(25.0)}
+
+
+def test_compute_unit_costs_falls_back_without_price_column():
+    df_no_price = _make_df_with_price().drop(columns=["unit_price"])
+
+    costs = compute_unit_costs(df_no_price, default_unit_cost=7.0)
+
+    assert costs == {"A": 7.0, "B": 7.0}
+
+
+def test_compute_unit_costs_can_be_used_directly_by_the_optimizer():
+    """Vérifie que le dict retourné s'intègre tel quel dans solve_optimal
+    (cᵢ par produit, cf. model.build_stochastic_model)."""
+
+    forecast_results = {
+        "A": _fake_forecast_result(mean=1000, std_95=100),
+        "B": _fake_forecast_result(mean=1000, std_95=100),
+    }
+    unit_cost = compute_unit_costs(_make_df_with_price(), default_unit_cost=1.0)
+
+    scenarios, probabilities = generate_demand_scenarios(forecast_results, n_sampled=20, seed=1)
+    result = solve_optimal(
+        scenarios, probabilities,
+        unit_cost=unit_cost, holding_cost=HOLDING_COST, shortage_cost=SHORTAGE_COST,
+        max_budget=10**9, max_capacity=800
+    )
+
+    assert result["status"] == "Optimal"
+    # Le produit le moins cher (A, 9.5) doit être favorisé par rapport
+    # au plus cher (B, 25.0) sous une capacité contrainte
+    assert result["orders"]["A"] > result["orders"]["B"]

@@ -97,7 +97,8 @@ def _train_test_split_temporal(
     (train, test) ou (None, None) si pas assez de données.
     """
 
-    clean_df = features_df.dropna(subset=FEATURE_COLUMNS).reset_index(drop=True)
+    feature_columns = _feature_columns_for(features_df)
+    clean_df = features_df.dropna(subset=feature_columns).reset_index(drop=True)
 
     if len(clean_df) <= horizon:
         return None, None
@@ -123,10 +124,12 @@ def _backtest(features_df: pd.DataFrame, horizon: int) -> float | None:
     if train is None:
         return None
 
-    model = XGBRegressor(n_estimators=100, max_depth=5, learning_rate=0.1)
-    model.fit(train[FEATURE_COLUMNS], train["quantity"])
+    feature_columns = _feature_columns_for(features_df)
 
-    predictions = model.predict(test[FEATURE_COLUMNS])
+    model = XGBRegressor(n_estimators=100, max_depth=5, learning_rate=0.1)
+    model.fit(train[feature_columns], train["quantity"])
+
+    predictions = model.predict(test[feature_columns])
     predictions = np.clip(predictions, 0, None)  # pas de ventes négatives
 
     return mean_absolute_error(test["quantity"].values, predictions)
@@ -139,6 +142,10 @@ def _next_feature_row(
     Construit la ligne de features pour le mois `next_date`, à partir de
     l'historique connu (auquel s'ajoutent les prédictions déjà générées
     lors d'une prévision récursive multi-mois).
+
+    Si `history` contient une colonne "unit_price", le prix futur est
+    inconnu -> on reprend le dernier prix connu (hypothèse : prix
+    stable à court terme, cf. _forecast_future).
     """
 
     quantities = history["quantity"]
@@ -153,7 +160,7 @@ def _next_feature_row(
         quantities.iloc[-12:].mean() if len(quantities) >= 12 else np.nan
     )
 
-    return pd.DataFrame([{
+    row = {
         "month": next_date.month,
         "year": next_date.year,
         "quarter": (next_date.month - 1) // 3 + 1,
@@ -163,7 +170,12 @@ def _next_feature_row(
         "rolling_mean_3": rolling_mean_3,
         "rolling_mean_12": rolling_mean_12,
         "trend": trend
-    }])
+    }
+
+    if "unit_price" in history.columns:
+        row["unit_price"] = history["unit_price"].iloc[-1]
+
+    return pd.DataFrame([row])
 
 
 def _forecast_future(
@@ -180,7 +192,8 @@ def _forecast_future(
     une distribution d'erreur symétrique comme la méthode ±1.5xMAE.
     """
 
-    clean_df = features_df.dropna(subset=FEATURE_COLUMNS).reset_index(drop=True)
+    feature_columns = _feature_columns_for(features_df)
+    clean_df = features_df.dropna(subset=feature_columns).reset_index(drop=True)
 
     if quantile_alpha is None:
         model = XGBRegressor(n_estimators=100, max_depth=5, learning_rate=0.1)
@@ -193,10 +206,14 @@ def _forecast_future(
             quantile_alpha=quantile_alpha
         )
 
-    model.fit(clean_df[FEATURE_COLUMNS], clean_df["quantity"])
+    model.fit(clean_df[feature_columns], clean_df["quantity"])
 
-    # Historique glissant : sert à calculer les lags des mois futurs
-    history = features_df[["date", "quantity"]].copy()
+    # Historique glissant : sert à calculer les lags (et le prix, s'il
+    # est utilisé) des mois futurs
+    history_columns = ["date", "quantity"]
+    if "unit_price" in features_df.columns:
+        history_columns.append("unit_price")
+    history = features_df[history_columns].copy()
     last_trend = features_df["trend"].iloc[-1]
 
     dates = []
@@ -207,15 +224,19 @@ def _forecast_future(
         trend = last_trend + step
 
         feature_row = _next_feature_row(history, next_date, trend)
-        prediction = max(float(model.predict(feature_row[FEATURE_COLUMNS])[0]), 0)
+        prediction = max(float(model.predict(feature_row[feature_columns])[0]), 0)
 
         dates.append(next_date)
         predictions.append(prediction)
 
         # La prédiction devient un "fait connu" pour calculer les lags
-        # du mois suivant.
+        # du mois suivant (et le prix est reporté à l'identique).
+        new_row = {"date": next_date, "quantity": prediction}
+        if "unit_price" in history.columns:
+            new_row["unit_price"] = history["unit_price"].iloc[-1]
+
         history = pd.concat(
-            [history, pd.DataFrame([{"date": next_date, "quantity": prediction}])],
+            [history, pd.DataFrame([new_row])],
             ignore_index=True
         )
 
@@ -266,7 +287,7 @@ def forecast_xgboost(df: pd.DataFrame, product_name: str, horizon: int = 3) -> d
     dates, predictions = _forecast_future(features_df, horizon)
 
     # 3. Intervalle de confiance
-    clean_df = features_df.dropna(subset=FEATURE_COLUMNS)
+    clean_df = features_df.dropna(subset=_feature_columns_for(features_df))
 
     if len(clean_df) >= 12:
         # Régression quantile : bornes 10e / 90e percentile

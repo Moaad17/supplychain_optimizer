@@ -25,7 +25,7 @@ from data.validator import validate_data  # noqa: E402
 from data.preprocessor import preprocess_data  # noqa: E402
 from forecasting.selector import forecast_all_products_auto  # noqa: E402
 from optimization.solver import evaluate_strategies  # noqa: E402
-from optimization.baselines import compute_naive_orders  # noqa: E402
+from optimization.baselines import compute_naive_orders, compute_unit_costs  # noqa: E402
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
@@ -49,8 +49,18 @@ selected_file = st.sidebar.selectbox("Fichier d'exemple", csv_files)
 uploaded_file = st.sidebar.file_uploader("...ou importer ton propre CSV", type="csv")
 
 st.sidebar.header("Paramètres économiques")
-unit_cost = st.sidebar.number_input(
-    "Coût d'achat unitaire", value=float(default_config.get("unit_cost", 10)), min_value=0.0
+use_actual_price = st.sidebar.checkbox(
+    "Utiliser le prix réel par produit (unit_price)",
+    value=bool(default_config.get("use_actual_unit_price", True)),
+    help="Si coché, chaque produit utilise son propre prix (colonne "
+         "unit_price des données) comme coût d'achat cᵢ, au lieu d'un "
+         "coût unique partagé par tous les produits."
+)
+unit_cost_fallback = st.sidebar.number_input(
+    "Coût d'achat unitaire (repli)" if use_actual_price else "Coût d'achat unitaire",
+    value=float(default_config.get("unit_cost", 10)), min_value=0.0,
+    help="Utilisé pour un produit sans unit_price connu, ou pour tous "
+         "les produits si la case ci-dessus est décochée." if use_actual_price else None
 )
 holding_cost = st.sidebar.number_input(
     "Coût de stockage (surplus/unité)", value=float(default_config.get("holding_cost", 5)), min_value=0.0
@@ -174,6 +184,21 @@ if not forecast_auto["results"]:
 
 naive_orders = compute_naive_orders(df_processed, horizon=horizon)
 
+unit_cost = (
+    compute_unit_costs(df_processed, default_unit_cost=unit_cost_fallback)
+    if use_actual_price
+    else unit_cost_fallback
+)
+
+if use_actual_price:
+    with st.expander("Coûts unitaires utilisés (par produit)"):
+        st.dataframe(
+            pd.DataFrame(
+                [{"Produit": p, "Coût unitaire (MAD)": round(c, 2)} for p, c in unit_cost.items()]
+            ),
+            width="stretch", hide_index=True
+        )
+
 strategies = _optimize(
     forecast_auto["results"],
     unit_cost=unit_cost, holding_cost=holding_cost, shortage_cost=shortage_cost,
@@ -203,7 +228,10 @@ orders_table = pd.DataFrame([
 st.dataframe(orders_table, width="stretch", hide_index=True)
 
 total_units = sum(hn["orders"].values())
-total_units_cost = total_units * unit_cost
+if isinstance(unit_cost, dict):
+    total_units_cost = sum(unit_cost[p] * qty for p, qty in hn["orders"].items())
+else:
+    total_units_cost = total_units * unit_cost
 c1, c2, c3 = st.columns(3)
 c1.metric("Unités totales commandées", f"{total_units:,.0f}")
 c2.metric("Coût d'achat", f"{total_units_cost:,.0f}", help="Σ cᵢ × qᵢ* -- ne compte pas le recours (rupture/surstock).")

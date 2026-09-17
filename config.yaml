@@ -1,6 +1,7 @@
 holding_cost: 5 #(coût de stockage par unité excédentaire par mois)
 shortage_cost: 20 #(coût de rupture par unité manquante)
-unit_cost: 10 #(coût d'achat par unité)
+unit_cost: 10 #(coût d'achat par unité -- valeur de repli si use_actual_unit_price est false, ou si un produit n'a pas de unit_price dans les données)
+use_actual_unit_price: true #(si true, utilise le unit_price réel de chaque produit -- colonne des données -- comme coût cᵢ dans l'optimisation, au lieu du unit_cost fixe ci-dessus)
 max_budget: 500000 #(budget total maximum)
 max_capacity: 14000 #(capacité de stockage totale en unités)
 forecast_horizon: 3 #(nombre de mois à prédire)

@@ -21,7 +21,7 @@ from data.loader import load_data
 from data.validator import validate_data
 from data.preprocessor import preprocess_data
 from forecasting.prophet_model import forecast_prophet
-from forecasting.ml_model import forecast_xgboost
+from forecasting.ml_model import forecast_xgboost, create_temporal_features, _feature_columns_for
 from forecasting.selector import forecast_all_products_auto
 
 
@@ -206,6 +206,47 @@ def test_mae_beats_naive_mean_baseline(beverages_df, forecast_function):
 
         assert result["mae"] is not None
         assert result["mae"] < 0.5 * mean_quantity
+
+
+# ==========================================================
+# unit_price comme feature XGBoost
+# ==========================================================
+
+def test_create_temporal_features_includes_unit_price_when_present():
+    df, validation = _load_and_prepare("sample_beverages.csv")
+    assert validation["valid"]
+    assert "unit_price" in df.columns  # préservé par preprocess_data
+
+    product = df["product"].unique()[0]
+    features = create_temporal_features(df, product)
+
+    assert "unit_price" in features.columns
+    assert "unit_price" in _feature_columns_for(features)
+    assert not features["unit_price"].isna().any()
+
+
+def test_create_temporal_features_omits_unit_price_when_absent():
+    df, _ = _load_and_prepare("sample_beverages.csv")
+    df_no_price = df.drop(columns=["unit_price"])
+
+    product = df_no_price["product"].unique()[0]
+    features = create_temporal_features(df_no_price, product)
+
+    assert "unit_price" not in features.columns
+    assert "unit_price" not in _feature_columns_for(features)
+
+
+def test_forecast_xgboost_still_works_without_unit_price():
+    """La feature est optionnelle : le forecasting ne doit pas planter
+    sur un dataset qui n'a pas cette colonne."""
+
+    df, _ = _load_and_prepare("sample_beverages.csv")
+    df_no_price = df.drop(columns=["unit_price"])
+    product = df_no_price["product"].unique()[0]
+
+    result = forecast_xgboost(df_no_price, product, horizon=HORIZON)
+
+    assert len(result["predictions"]) == HORIZON
 
 
 # ==========================================================
