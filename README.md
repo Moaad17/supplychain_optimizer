@@ -1,96 +1,155 @@
 # Supply Chain Optimizer
 
-Outil de prévision de la demande et d'optimisation des stocks pour la
-supply chain. Le projet se construit en 3 phases : **chargement/validation
-des données**, **forecasting** (Prophet + XGBoost avec sélection
-automatique du meilleur modèle), puis **optimisation** des stocks sous
-contraintes.
+Un outil qui répond à une question simple mais coûteuse à mal gérer :
+**combien commander de chaque produit, pour le mois prochain, quand on
+ne connaît pas la demande exacte à l'avance ?**
 
-Ce README suit l'avancement jour par jour (Jour 1 à Jour 6 pour l'instant).
+Commander trop → argent immobilisé en stock, coût de stockage.
+Commander trop peu → ruptures, ventes perdues, clients mécontents.
+Ce projet automatise cette décision en combinant **prévision de la
+demande** (machine learning) et **optimisation sous incertitude**
+(recherche opérationnelle), plutôt que de se fier à une intuition ou à
+une simple moyenne historique.
 
-## Fonctionnalités implémentées
+## Le principe en une image
 
-### Phase 1 — Données ([app/data/](app/data/))
+```
+Historique de ventes (CSV)
+         │
+         ▼
+┌─────────────────────┐
+│   1. FORECASTING     │   Pour chaque produit : Prophet ET XGBoost
+│  (Prophet / XGBoost) │   sont entraînés, le meilleur des deux est
+│                      │   choisi automatiquement (backtest MAE).
+└─────────┬────────────┘   Résultat : une prévision + un intervalle
+          │                 d'incertitude (pas juste un chiffre).
+          ▼
+┌─────────────────────┐
+│  2. OPTIMISATION     │   L'incertitude de la prévision devient des
+│   (recherche         │   scénarios de demande (optimiste/pessimiste/
+│   opérationnelle)    │   intermédiaires). Le programme calcule la
+│                      │   commande qui minimise le coût ATTENDU
+└─────────┬────────────┘   (achat + rupture + surstock), sous
+          │                 contrainte de budget et de capacité.
+          ▼
+   Quantité à commander
+   par produit, + le coût
+   que ça permet d'économiser
+   par rapport à des méthodes
+   plus simples.
+```
 
-- **`loader.py`** : `load_data(filepath)` charge un fichier CSV ou Excel
-  et convertit la colonne `date` en datetime.
-- **`validator.py`** : `validate_data(df)` vérifie les colonnes
-  obligatoires (`date`, `product`, `quantity`), les types, les valeurs
-  négatives, les valeurs manquantes, le volume de données (mois
-  d'historique) et les doublons date+produit. Retourne
-  `{valid, errors, warnings, stats}`.
-- **`preprocessor.py`** : `preprocess_data(df)` fusionne les doublons,
-  comble les mois manquants avec 0, trie chronologiquement et ajoute
-  `year`, `month`, `quarter`.
+## Pourquoi c'est plus qu'une prévision + une règle de calcul
 
-### Phase 2 — Forecasting ([app/forecasting/](app/forecasting/), [app/analysis/](app/analysis/))
+La partie qui distingue ce projet d'un simple "je prévois puis
+j'arrondis" : l'optimisation ne travaille jamais avec un seul chiffre
+de demande. Elle raisonne sur une **distribution** de scénarios
+possibles (tirés à partir de l'intervalle de confiance de la
+prévision), et choisit la commande qui minimise le coût *en moyenne*
+sur tous ces scénarios — pas seulement pour le scénario le plus
+probable. C'est ce qu'on appelle la **programmation stochastique avec
+recours**.
 
-- **`prophet_model.py`** : `forecast_prophet(df, product_name, horizon)`
-  — prévision par produit avec [Prophet](https://facebook.github.io/prophet/),
-  backtest sur les derniers mois connus pour mesurer la MAE, intervalle
-  de confiance natif, valeurs négatives clippées à 0.
-- **`ml_model.py`** : `forecast_xgboost(df, product_name, horizon)` —
-  même interface que Prophet, mais avec XGBoost et des features
-  temporelles manuelles (lags, moyennes glissantes, tendance,
-  saisonnalité). Split train/test strictement chronologique (pas de
-  data leakage). Intervalle de confiance par régression quantile
-  (`reg:quantileerror`).
-- **`selector.py`** :
-  - `forecast_all_products(df, model_type, horizon)` — applique un
-    modèle à tous les produits, isole les échecs par produit sans
-    interrompre les autres.
-  - `select_best_model(df, product_name, horizon)` — compare Prophet et
-    XGBoost sur la MAE de backtest et retourne le gagnant.
-  - `forecast_all_products_auto(df, horizon)` — sélection automatique du
-    meilleur modèle pour chaque produit du dataset.
-- **`visualizer.py`** : `plot_forecast(...)` — graphique Plotly
-  (historique, prédictions, intervalle de confiance).
-- **`comparator.py`** : `compare_forecasts(...)` et `compare_mae(...)` —
-  comparaison visuelle et chiffrée Prophet vs XGBoost.
+Le projet va plus loin en répondant à une question que beaucoup
+d'outils n'abordent pas : **est-ce que tout cet effort en vaut la
+peine ?** Il calcule et compare 4 stratégies :
 
-### Tests ([tests/](tests/))
+| Stratégie | Ce qu'elle représente |
+|---|---|
+| **Naïf** | Commander la moyenne historique — le réflexe "zéro effort" |
+| **EV** | Commander en fonction de la demande moyenne prévue, sans tenir compte de l'incertitude |
+| **HN** *(la stratégie retenue)* | Optimiser en tenant compte explicitement de l'incertitude |
+| **WS** | Le coût qu'on aurait si on connaissait la demande à l'avance — une borne théorique, inatteignable |
 
-- `test_loader.py` : chargement (CSV valide, fichier absent, format non
-  supporté) et validation (DataFrame correct, colonne manquante, trop de
-  valeurs manquantes).
-- `test_forecasting.py` : bout en bout sur les 3 CSV d'exemple
-  (multi-produits, gestion d'échec partiel) + invariants (prédictions
-  positives, intervalle cohérent, sélecteur exhaustif, MAE raisonnable).
+De ça découlent deux indicateurs concrets :
+- **EVPI** (Expected Value of Perfect Information) — combien coûte le
+  fait de ne pas connaître la demande à l'avance. Investir dans une
+  meilleure prévision n'a de sens que si l'EVPI est élevé.
+- **VSS** (Value of the Stochastic Solution) — combien on gagne en
+  utilisant l'optimisation stochastique plutôt qu'une règle basée sur
+  la simple moyenne.
 
-Lancer tous les tests :
+## Le pipeline en détail
+
+### 1. Données ([app/data/](app/data/))
+
+Charge un CSV (`date`, `product`, `quantity`, `unit_price` optionnel),
+le valide (colonnes obligatoires, types, valeurs manquantes, volume
+d'historique suffisant) et le nettoie (doublons fusionnés, mois
+manquants comblés, variables temporelles ajoutées).
+
+### 2. Prévision ([app/forecasting/](app/forecasting/))
+
+Pour chaque produit, deux modèles sont entraînés et comparés par
+backtest (les derniers mois sont cachés puis prédits, pour mesurer
+l'erreur sur des données jamais vues) :
+
+- **Prophet** : modèle spécialisé séries temporelles, capte bien la
+  saisonnalité et la tendance.
+- **XGBoost** : modèle généraliste avec des features construites à la
+  main (mois précédent, moyennes glissantes, tendance, prix du produit
+  s'il est disponible). Meilleur sur des patterns plus irréguliers.
+
+Le modèle avec la MAE (erreur moyenne) la plus basse est retenu
+automatiquement, produit par produit — pas besoin de choisir à la
+main.
+
+### 3. Optimisation ([app/optimization/](app/optimization/))
+
+L'intervalle de confiance de chaque prévision est converti en
+scénarios de demande (un mélange de cas extrêmes et de tirages
+intermédiaires). Un programme linéaire (résolu avec
+[PuLP](https://github.com/coin-or/pulp)) détermine ensuite la commande
+qui minimise :
+
+```
+coût d'achat (certain) + coût de rupture/surstock attendu (moyenne sur tous les scénarios)
+```
+
+sous contrainte de budget et de capacité de stockage. Pour un grand
+nombre de produits, une méthode de décomposition (L-shaped / Benders)
+prend le relais automatiquement pour rester rapide.
+
+### 4. Interface ([frontend/app.py](frontend/app.py))
+
+Une application [Streamlit](https://streamlit.io/) qui exécute tout le
+pipeline avec des paramètres ajustables (coûts, budget, capacité,
+horizon), et affiche le plan de commande, la comparaison des 4
+stratégies et l'interprétation de l'EVPI/VSS.
+
+## Démarrage rapide
+
+```bash
+pip install -r requirements.txt
+
+# Interface interactive
+streamlit run frontend/app.py
+
+# Ou le script de démonstration en ligne de commande
+cd app && python main.py
+```
+
+## Données d'exemple ([examples/](examples/))
+
+| Fichier | Contenu | Usage |
+|---|---|---|
+| `sample_beverages.csv` | 5 boissons, 36 mois | Démo principale |
+| `sample_retail.csv` | 8 produits retail, 24 mois | Test multi-produits, prix très hétérogènes |
+| `sample_port_traffic.csv` | Trafic portuaire (colonnes différentes) | Vérifie que le validateur rejette proprement un format incompatible |
+
+## Tests
 
 ```bash
 pytest -v
 ```
 
-### À venir
+44 tests couvrent le chargement/validation, le forecasting (précision,
+cohérence des intervalles, gestion des échecs), et l'optimisation
+(contraintes respectées, cohérence WS ≤ HN ≤ EV, non-régression du
+solveur L-shaped contre le calcul direct).
 
-- Phase 3 — Optimisation des stocks ([app/optimization/](app/optimization/) :
-  contraintes, modèle, solveur — pas encore implémenté).
-- API ([app/API/](app/API/)) et frontend ([frontend/](frontend/)) — squelettes
-  pas encore implémentés.
+## Ce qui n'est pas encore fait
 
-## Installation
-
-```bash
-pip install -r requirements.txt
-```
-
-## Utilisation
-
-```bash
-cd app
-python main.py
-```
-
-Charge `examples/sample_beverages.csv`, valide et prétraite les
-données, puis lance et compare Prophet et XGBoost sur un produit avec
-visualisation.
-
-## Données d'exemple ([examples/](examples/))
-
-| Fichier | Colonnes | Usage |
-|---|---|---|
-| `sample_beverages.csv` | date, product, quantity, unit_price | Démo principale (36 mois, 5 produits) |
-| `sample_retail.csv` | date, product, quantity, unit_price | Test multi-produits (8 produits) |
-| `sample_port_traffic.csv` | date, port, tonnage_milliers, nb_navires | Test du rejet par le validateur (colonnes incompatibles) |
+- `app/API/` : pas encore d'API HTTP, seulement le script/l'interface Streamlit.
+- `app/analysis/metrics.py` : fichier réservé, pas encore implémenté.
+- Containerisation (`Dockerfile`, `docker-compose.yaml`) : pas encore écrite.
