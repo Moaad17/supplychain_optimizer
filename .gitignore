@@ -1,6 +1,6 @@
 .venv/
 .env.example
-data/
+/data/
 __pycache__/
 .pytest_cache/
 
